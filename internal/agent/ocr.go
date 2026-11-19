@@ -22,6 +22,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -201,16 +202,45 @@ func ocrIn(at place) *Agent {
 }
 
 // ocrNotOurs turns away an `ocr` command that isn't Open Code Review's:
-// one under no folder named for it.
+// one under no folder named for it, and no launcher of its package.
 func ocrNotOurs(bin string) bool {
 	for _, p := range []string{bin, evalLink(bin)} {
-		s := strings.ToLower(filepath.ToSlash(p))
-		if strings.Contains(s, "open-code-review") || strings.Contains(s, "opencodereview") {
+		if ocrNamed(p) {
 			return false
 		}
 	}
-	return true
+	return !ocrShim(bin)
 }
+
+// ocrNamed reports whether p reads as Open Code Review's own: a folder
+// named for it, or a link into one.
+func ocrNamed(p string) bool {
+	s := strings.ToLower(filepath.ToSlash(p))
+	return strings.Contains(s, "open-code-review") || strings.Contains(s, "opencodereview")
+}
+
+// ocrShim reports whether bin, a launcher a package manager wrote where
+// nothing is named for the package, starts Open Code Review. Windows' npm
+// writes ocr.cmd into its prefix (%APPDATA%\npm, nvm's nodejs) rather than
+// a link, so the command's path names no package, and the agent went
+// "CLI not found" while `ocr` ran (#7043); the script it runs spells out
+// node_modules\@alibaba-group\open-code-review\bin\ocr.js. Only a file a
+// launcher can be is read: a program of the name is megabytes.
+func ocrShim(bin string) bool {
+	st, err := os.Stat(bin)
+	if err != nil || st.IsDir() || st.Size() > ocrShimMax {
+		return false
+	}
+	b, err := os.ReadFile(bin)
+	if err != nil {
+		return false
+	}
+	return ocrNamed(string(b))
+}
+
+// ocrShimMax is the largest file read as a launcher: npm's cmd shim is
+// some hundreds of bytes.
+const ocrShimMax = 8 << 10
 
 // ocrOwnModels is the provider/model pairs OCR's config.json sets up of
 // the user's own: each entry's model and models, and the one in use.

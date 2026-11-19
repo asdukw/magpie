@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -171,5 +172,59 @@ func TestOCRNotOurs(t *testing.T) {
 		if got := !ocrNotOurs(bin); got != ours {
 			t.Errorf("%s: ours %v, want %v", bin, got, ours)
 		}
+	}
+}
+
+// prime167 (#7043): on Windows `npm i -g @alibaba-group/open-code-review`
+// writes ocr.cmd into npm's prefix rather than a link into the package, so
+// nothing in the command's own path names Open Code Review and the agent
+// read "CLI not found" while `ocr` ran. What the shim starts names it.
+func TestOCRWindowsShim(t *testing.T) {
+	dir := t.TempDir()
+	// npm's shim (cmd-shim), as npm writes one for bin/ocr.js
+	npmShim := "@ECHO off\r\n" +
+		"SETLOCAL\r\n" +
+		"SET \"_prog=node\"\r\n" +
+		"\"%_prog%\"  \"%dp0%\\node_modules\\@alibaba-group\\open-code-review\\bin\\ocr.js\" %*\r\n"
+	shim := filepath.Join(dir, "ocr.cmd")
+	if err := os.WriteFile(shim, []byte(npmShim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if ocrNotOurs(shim) {
+		t.Fatal("npm's shim of Open Code Review taken for another program's")
+	}
+	// another program's `ocr`: nothing of the package in what it starts
+	other := filepath.Join(dir, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	theirs := filepath.Join(other, "ocr.cmd")
+	if err := os.WriteFile(theirs, []byte("@ECHO off\r\ntesseract.exe %*\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !ocrNotOurs(theirs) {
+		t.Fatal("another program's ocr taken for Open Code Review's")
+	}
+	// a program of the name is no launcher, however named: not read
+	program := filepath.Join(other, "ocr.exe")
+	if err := os.WriteFile(program, make([]byte, ocrShimMax+1), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !ocrNotOurs(program) {
+		t.Fatal("a file too big to be a launcher was read as one")
+	}
+	if runtime.GOOS != "windows" {
+		return // only Windows asks PATH for ocr.exe and ocr.cmd
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PATH", dir)
+	a, err := Find(ocrID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Detected() {
+		t.Fatal("ocr on PATH through npm's shim isn't Open Code Review there")
 	}
 }
